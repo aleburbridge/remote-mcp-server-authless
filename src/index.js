@@ -35,32 +35,7 @@ function checkAuth(request) {
   return false;
 }
 
-// TODO: 
-// Implement auth
-// Share on Github
-// Share with team 
-
-/*
-Calculate the priority of a ticket based on multiple factors:
-1. SLA enterprise tag (immediately higher priority)
-2. Age of the ticket
-3. Time since last response
-4. Status priority (Open > New > Pending > Feature Request Review Pending > ENG Confirmed Bug)
-
-Returns a dictionary with priority score and breakdown of factors.
-*/
-
-/*
-Get random solved tickets for audit from a specific agent within a timeframe.
-
-Args:
-	name: Agent name or ID
-	timeframe: Time period (e.g., "7d", "24h", "30m")
-	numberOfTickets: Number of tickets to return
-	
-Returns:
-	List of ticket IDs that have at least 4 comments
-*/
+import { randomInt } from 'crypto';
 
 export class MyMCP extends McpAgent {
 	server = new McpServer({
@@ -278,7 +253,114 @@ export class MyMCP extends McpAgent {
 				}
 			}
 		);
+
+		this.server.tool(
+			"get_random_tickets_for_audit",
+			"Get random solved tickets for audit from a specific agent within a timeframe. Returns a list of ticket IDs that have at least 4 comments.",
+			{ agent_name: z.string(), timeframe: z.string(), numberOfTickets: z.number() },
+			async ({ agent_name, timeframe, numberOfTickets }) => {
+				try {
+					// 1. Parse timeframe
+					function parseTimeframe(timeframe, endTime) {
+						timeframe = timeframe.toLowerCase().trim();
+						const match = timeframe.match(/(\d+)([dhwm])/);
+						if (!match) throw new Error(`Invalid timeframe format: ${timeframe}. Use format like '7d', '24h', '30m', '2w'`);
+						const value = parseInt(match[1]);
+						const unit = match[2];
+						let ms = 0;
+						if (unit === 'd') ms = value * 24 * 60 * 60 * 1000;
+						else if (unit === 'h') ms = value * 60 * 60 * 1000;
+						else if (unit === 'm') ms = value * 60 * 1000;
+						else if (unit === 'w') ms = value * 7 * 24 * 60 * 60 * 1000;
+						else throw new Error(`Invalid time unit: ${unit}. Use d (days), h (hours), m (minutes), or w (weeks)`);
+						return new Date(endTime.getTime() - ms);
+					}
+
+					const endTime = new Date();
+					const startTime = parseTimeframe(timeframe, endTime);
+
+					// 2. Get agent ID
+					let agentId;
+					if (/^\d+$/.test(agent_name)) {
+						agentId = parseInt(agent_name);
+					} else if (nameToIdMap.has(agent_name)) {
+						agentId = nameToIdMap.get(agent_name);
+					} else {
+						const firstName = agent_name.split(' ')[0].toLowerCase();
+						const matchingAgentIds = [];
+						for (const [fullName, userId] of nameToIdMap.entries()) {
+							const agentFirstName = fullName.split(' ')[0].toLowerCase();
+							if (agentFirstName === firstName) matchingAgentIds.push(userId);
+						}
+						if (matchingAgentIds.length === 0) throw new Error(`No agent found with name or ID: ${agent_name}`);
+						agentId = matchingAgentIds[0];
+					}
+
+					// 3. Get solved tickets for the agent during timeframe
+					const searchQuery = `assignee:${agentId} status:solved`;
+					const searchResults = await client.search.query(searchQuery);
+					const allTickets = searchResults.result || [];
+
+					const solvedTickets = allTickets.filter(ticket => {
+						if (ticket.status !== 'solved') return false;
+						let solvedAt = ticket.updated_at;
+						if (typeof solvedAt === 'string') solvedAt = new Date(solvedAt);
+						return solvedAt >= startTime && solvedAt <= endTime;
+					});
+
+					if (solvedTickets.length < numberOfTickets) {
+						return { content: [{ type: "text", text: `Only ${solvedTickets.length} solved tickets found for ${agent_name} in timeframe ${timeframe}, but ${numberOfTickets} requested` }] };
+					}
+
+					// 4. Select random tickets and ensure they have at least 4 comments
+					const availableTickets = solvedTickets.map(t => t.id);
+					const selectedTickets = [];
+					const checkedTickets = new Set();
+
+					while (selectedTickets.length < numberOfTickets && availableTickets.length > 0) {
+						const idx = Math.floor(Math.random() * availableTickets.length);
+						const ticketId = availableTickets.splice(idx, 1)[0];
+						if (checkedTickets.has(ticketId)) continue;
+						checkedTickets.add(ticketId);
+						// Get comments for this ticket
+						let comments = [];
+						try {
+							comments = await client.tickets.getComments(ticketId);
+						} catch (e) {
+							continue;
+						}
+						if (comments.length >= 4) {
+							selectedTickets.push(ticketId);
+						}
+					}
+
+					if (selectedTickets.length < numberOfTickets) {
+						return { content: [{ type: "text", text: `Only ${selectedTickets.length} tickets with 4+ comments found for ${agent_name} in timeframe ${timeframe}` }] };
+					}
+
+					return { content: [{ type: "text", text: JSON.stringify(selectedTickets, null, 2) }] };
+				} catch (error) {
+					return { content: [{ type: "text", text: `Error: Failed to get random tickets for audit for ${agent_name}: ${error.message}` }] };
+				}
+			}
+		);
 	}
+}
+
+// Utility function to parse timeframe string into a start Date
+export function parseTimeframe(timeframe, endTime) {
+  timeframe = timeframe.toLowerCase().trim();
+  const match = timeframe.match(/(\d+)([dhwm])/);
+  if (!match) throw new Error(`Invalid timeframe format: ${timeframe}. Use format like '7d', '24h', '30m', '2w'`);
+  const value = parseInt(match[1]);
+  const unit = match[2];
+  let ms = 0;
+  if (unit === 'd') ms = value * 24 * 60 * 60 * 1000;
+  else if (unit === 'h') ms = value * 60 * 60 * 1000;
+  else if (unit === 'm') ms = value * 60 * 1000;
+  else if (unit === 'w') ms = value * 7 * 24 * 60 * 60 * 1000;
+  else throw new Error(`Invalid time unit: ${unit}. Use d (days), h (hours), m (minutes), or w (weeks)`);
+  return new Date(endTime.getTime() - ms);
 }
 
 export default {
